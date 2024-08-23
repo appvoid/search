@@ -133,8 +133,8 @@ def main():
         if query.lower() == 'quit':
             break
 
-        num_results = '3'  # You can change this to input() if you want user input
-        num_results = int(num_results) if num_results.isdigit() else 3
+        num_results = '1'  # You can change this to input() if you want user input
+        num_results = int(num_results) if num_results.isdigit() else 1 # one result makes it a lot faster
 
         # Generate search queries using the LLM
         search_queries = generate_search_queries(query)
