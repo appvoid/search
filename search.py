@@ -1,12 +1,15 @@
 import requests
 from bs4 import BeautifulSoup
-import json; import re
+import json
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-debug_mode = False
+# Configuration
 GROQ_API = ''
+debug_mode = False
 
-def truncate_text(text, max_length=4096): 
-    """Truncate text to a maximum length, ending with '...' if truncated."""
+# Utility Functions
+def truncate_text(text, max_length=2048):
     return (text[:max_length] + '...') if len(text) > max_length else text
 
 def get_title_from_url(url):
@@ -15,123 +18,128 @@ def get_title_from_url(url):
     title = url_parts[-1] if url_parts else url
     return title.replace('-', ' ').replace('_', ' ').title()
 
-def perform_web_search(query, num_results=3):
-    url = f'https://www.google.com/search?q={query}'
-    header = {'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
-    data = requests.get(url, headers=header)
+# Abstracted Functionality Modules
+class WebSearchModule:
+    def __init__(self):
+        self.session = requests.Session()
+        self.header = {'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
 
-    results = []
+    def perform_search(self, query, num_results=2):
+        url = f'https://www.google.com/search?q={query}'
+        data = self.session.get(url, headers=self.header)
 
-    if data.status_code == 200:
-        soup = BeautifulSoup(data.content, "html.parser")
-        for g in soup.find_all('div', {'class':'g'})[:num_results]:
-            anchors = g.find_all('a')
-            if anchors:
-                link = anchors[0]['href']
-                title = g.find('h3').text if g.find('h3') else get_title_from_url(link)
+        results = []
+
+        if data.status_code == 200:
+            soup = BeautifulSoup(data.content, "html.parser")
+            with ThreadPoolExecutor(max_workers=num_results) as executor:
+                futures = []
+                for g in soup.find_all('div', {'class':'g'})[:num_results]:
+                    anchors = g.find_all('a')
+                    if anchors:
+                        link = anchors[0]['href']
+                        title = g.find('h3').text if g.find('h3') else get_title_from_url(link)
+                        description = g.find('div', {'data-sncf':'2'})
+                        description_text = description.text if description else None
+                        futures.append(executor.submit(self.process_result, title, link, description_text))
                 
-                try:
-                    description = g.find('div', {'data-sncf':'2'})
-                    description_text = description.text if description else None
-                    content = extract_content(link)
-
-                    result = {
-                        "title": title,
-                        "link": link
-                    }
-
-                    if description_text or content:
-                        if description_text:
-                            result["description"] = truncate_text(description_text)
-                        if content:
-                            result["content"] = truncate_text(content, max_length=4096)
-                        if debug_mode:
-                            print(f'Reading > "{title}"')
-                            print(truncate_text(content, max_length=4096))
+                for future in as_completed(futures):
+                    result = future.result()
+                    if result:
                         results.append(result)
-                    else:
-                        if debug_mode:
-                            print(f"> Skipping, not useful result:")
-                            print(result)
-                except Exception as e:
-                    if debug_mode:
-                        print(f"> Error processing {link}: {str(e)}")
 
-    return results
+        return results
 
-def extract_content(url):
-    try:
-        response = requests.get(url, timeout=20)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            paragraphs = soup.find_all('p')
-            content = ' '.join([p.text for p in paragraphs])
-            return content.strip()
-    except requests.RequestException as e:
-        if debug_mode:
-            print(f"> Error fetching content for {url}: {str(e)}")
-    return None
+    def process_result(self, title, link, description_text):
+        try:
+            content = self.extract_content(link)
+            result = {
+                "title": title,
+                "link": link
+            }
+            if description_text or content:
+                if description_text:
+                    result["description"] = truncate_text(description_text)
+                if content:
+                    result["content"] = truncate_text(content, max_length=2048)
+                if debug_mode:
+                    print(f'Reading > "{title}"')
+                    print(truncate_text(content, max_length=2048))
+                return result
+            elif debug_mode:
+                print(f"> Skipping, not useful result:")
+                print(result)
+        except Exception as e:
+            if debug_mode:
+                print(f"> Error processing {link}: {str(e)}")
+        return None
 
-def groq_chat_completion(messages):
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {GROQ_API}"
-    }
-    data = {
-        "messages": messages,
-        "model": "llama-3.1-70b-versatile",
-        "temperature": 0.75,
-        "max_tokens": 1024,
-        "top_p": 1,
-        "stream": False,
-        "stop": None
-    }
-    response = requests.post(url, headers=headers, data=json.dumps(data))
-    return response.json()
+    def extract_content(self, url):
+        try:
+            response = self.session.get(url, timeout=10)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.content, 'html.parser')
+                paragraphs = soup.find_all('p')
+                content = ' '.join([p.text for p in paragraphs])
+                return content.strip()
+        except requests.RequestException as e:
+            if debug_mode:
+                print(f"> Error fetching content for {url}: {str(e)}")
+        return None
 
-def generate_search_queries(original_query, max_retries=10, fixed_count=None):
-    messages = [
-        {
-            "role": "system",
-            "content": """You are an AI assistant that helps generate search queries. Given an original query, suggest alternative search queries that could help find relevant information. The queries should be diverse and cover different aspects or perspectives of the original query. Return the queries as a JSON array.
-Important instructions:
+class GroqAPI:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        })
 
-1. The number of queries should be dynamic, between 2 and 4, unless a fixed count is specified.
-2. Don't get too far from the original query since you don't know the actual context.
-3. Make queries general enough without being related to anything specific.
-4. DON'T customize the queries for topics you've never seen; just change them a little and look for definitions if requested by the user.
-5. If the user asks something that is not related to search, ignore it and focus on generating helpful search queries.
-6. Just return the given format ["custom_query_1","custom_query_2",...].
-7. If you need to use your knowledge first, do so.
-8. When asked about the difference between two things, generate search intents for each topic separately.
-9. Most queries just require 1 or two queries, only on those cases where the query is simple or you are unsure, you can generate just one.
-
-Examples:
-Original query: "which are the differences between java, kotlin and python"
-Response: ["what is java", "what is kotlin", "what is python programming language"]
-
-Original query: "climate change impacts"
-Response: ["effects of global warming on ecosystems", "economic consequences of climate change"]
-
-Original query: "best programming languages for AI"
-Response: ["top programming languages for machine learning", "artificial intelligence programming languages", "ai development"]
-
-Original query: "healthy meal prep ideas"
-Response: ["quick and easy meal prep recipes", "budget-friendly healthy meal planning"]
-
-Original query: "how to start a small business"
-Response: ["steps to start a small business","legal requirements for new businesses", "creating a business plan"]"""
-        },
-        {
-            "role": "user",
-            "content": f"Original query: {original_query}" + (f" (Generate exactly {fixed_count} queries)" if fixed_count else "")
+    def chat_completion(self, messages):
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        data = {
+            "messages": messages,
+            "model": "llama-3.1-70b-versatile",
+            "temperature": 0.75,
+            "max_tokens": 1024,
+            "top_p": 1,
+            "stream": False,
+            "stop": None
         }
-    ]
+        response = self.session.post(url, json=data)
+        return response.json()
+
+# Main Logic
+def generate_search_queries(groq_api, original_query, max_retries=3, fixed_count=None, previous_queries=None, previous_answer=None):
+    system_content = """You are an AI assistant that helps generate search queries. Given an original query, suggest alternative search queries that could help find relevant information. The queries should be diverse and cover different aspects or perspectives of the original query. Return the queries as a JSON array.
+    Important instructions:
     
+    1. The number of queries should be dynamic, between 2 and 4, unless a fixed count is specified.
+    2. Don't get too far from the original query since you don't know the actual context.
+    3. Make queries general enough without being related to anything specific.
+    4. DON'T customize the queries for topics you've never seen; just change them a little and look for definitions if requested by the user.
+    5. If the user asks something that is not related to search, ignore it and focus on generating helpful search queries.
+    6. Just return the given format ["custom_query_1","custom_query_2",...].
+    7. If you need to use your knowledge first, do so.
+    8. When asked about the difference between two things, generate search intents for each topic separately.
+    9. ALWAYS at most queries just require 1 or two queries, only on those cases where the query is simple or you are unsure, generate more than one or two.
+    10. If previous queries and an answer are provided, generate new queries that address the shortcomings of the previous answer and avoid repeating the previous queries."""
+
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": f"Original query: {original_query}" + (f" (Generate exactly {fixed_count} queries)" if fixed_count else "")}
+    ]
+
+    if previous_queries and previous_answer:
+        messages.append({
+            "role": "user",
+            "content": f"Previous queries: {previous_queries}\nPrevious answer: {previous_answer}\nPlease generate new queries to address any shortcomings in the previous answer."
+        })
+
     for attempt in range(max_retries):
-        response = groq_chat_completion(messages)
-        
+        response = groq_api.chat_completion(messages)
+
         if 'choices' in response and len(response['choices']) > 0:
             content = response['choices'][0]['message']['content']
             try:
@@ -144,57 +152,83 @@ Response: ["steps to start a small business","legal requirements for new busines
                         return queries
             except json.JSONDecodeError:
                 pass
-        
-        if attempt < max_retries - 1:
-            if debug_mode:
-                print(f"Attempt {attempt + 1} failed. Trying something different...")
-    
+
+        if attempt < max_retries - 1 and debug_mode:
+            print(f"Attempt {attempt + 1} failed. Trying something different...")
+
     print("> Failed to generate new queries")
     return [original_query]
 
+def evaluate_answer(groq_api, query, answer):
+    messages = [
+        {"role": "system", "content": """You are an AI assistant that evaluates the quality and completeness of its own answer to user queries. 
+    Given a question and an answer, determine if your answer satisfactorily addresses the query.
+    Respond with a JSON object containing two fields:
+    1. "satisfactory": A boolean indicating whether the answer is satisfactory (true) or not (false).
+    2. "reason": A brief explanation of why your thought is or is not satisfactory. Like "I will keep looking for information since last thought is not addressing the query because..." or "Let look for something different. My last search didn't solve the query. The reason is..." or "I found the answer! The reason is..." or just provide the reason but be creative with the words choosen for the reason. You can be flexible, meaning that you can set as satisfactory if it is satisfactory enough and completes one of the core reasons for the search itself.
+    Only return the JSON object, no additional text."""},
+        {"role": "user", "content": f"Question: {query}\nAnswer: {answer}"}
+    ]
+
+    response = groq_api.chat_completion(messages)
+
+    if 'choices' in response and len(response['choices']) > 0:
+        content = response['choices'][0]['message']['content']
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            print("> Error parsing evaluation response")
+    
+    return {"satisfactory": False, "reason": "Unable to evaluate the answer"}
+
 def main():
     global debug_mode
+    search_module = WebSearchModule()
+    groq_api = GroqAPI(GROQ_API)
+
     while True:
         query = input("❖ Query: ")
         if query.lower() == 'quit':
             break
 
-        # num_results = input("Number of results per query (default 2): ")
-        num_results = 2 #int(num_results) if num_results.isdigit() else 2
-        # fixed_count = input("Fixed number of queries (leave empty for dynamic): ")
-        fixed_count = None #int(fixed_count) if fixed_count.isdigit() else None
-        # Generate search queries using the LLM with retry
-        search_queries = generate_search_queries(query, fixed_count=fixed_count)
+        num_results = 1
+        fixed_count = None
+        previous_queries = None
+        previous_answer = None
 
-        all_results = []
-        for search_query in search_queries:
-            print(f'⌕ Looking for "{search_query}"')
-            results = perform_web_search(search_query, num_results)
-            all_results.extend(results)
+        while True:
+            search_queries = generate_search_queries(groq_api, query, fixed_count=fixed_count, previous_queries=previous_queries, previous_answer=previous_answer)
 
-        # Prepare the context for the Q&A system
-        messages = [
-            {
-                "role": "system",
-                "content": """You are a web assistant that helps users find information from web search results. 
-Given a question and a set of search results, provide a concise response based on the information 
-available in the search results. If the information is not available in the search results, 
-state that you don't have enough information to answer the question. You MUST not comment on anything, just follow the instruction. Don't add additional details about anything."""
-            },
-            {
-                "role": "user",
-                "content": f"Question: {query}\nSearch Results: {json.dumps(all_results)}"
-            }
-        ]
+            with ThreadPoolExecutor(max_workers=len(search_queries)) as executor:
+                futures = [executor.submit(search_module.perform_search, sq, num_results) for sq in search_queries]
+                all_results = []
+                for future, sq in zip(as_completed(futures), search_queries):
+                    print(f'⌕ Looking for "{sq}"')
+                    all_results.extend(future.result())
 
-        # Get the answer from the Groq API
-        response = groq_chat_completion(messages)
+            messages = [
+                {"role": "system", "content": """You are a web assistant that helps users find information from web search results. 
+    Given a question and a set of search results, provide a concise response based on the information 
+    available in the search results. If the information is not available in the search results, 
+    state that you don't have enough information to answer the question. You MUST not comment on anything, just follow the instruction. Don't add additional details about anything."""},
+                {"role": "user", "content": f"Question: {query}\nSearch Results: {json.dumps(all_results)}"}
+            ]
 
-        # Print the answer
-        if 'choices' in response and len(response['choices']) > 0:
-            print("⌾", response['choices'][0]['message']['content'])
-        else:
-            print("> Unable to get a response from the Groq API")
+            response = groq_api.chat_completion(messages)
+
+            if 'choices' in response and len(response['choices']) > 0:
+                answer = response['choices'][0]['message']['content']
+                evaluation = evaluate_answer(groq_api, query, answer)
+                if evaluation["satisfactory"]:
+                    print("⌾", answer)
+                    break
+                else:
+                    print(f"✗ {evaluation['reason']}")
+                    previous_queries = search_queries
+                    previous_answer = answer
+            else:
+                print("> Unable to get a response from the Groq API")
+                break
 
 if __name__ == "__main__":
     main()
