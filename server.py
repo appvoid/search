@@ -1,3 +1,5 @@
+# server.py
+
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify
@@ -221,6 +223,18 @@ async def handle_math_query(groq_api, session, query):
 
     Or for instance, if it asks to count how many r's does "strawberry" have: result = eval("'strawberry'.count('r')")
     and so on, make sure is always one-liner and have the result variable.
+
+    Here's another example: 
+
+code = '''x = 9.11
+y = 9.9
+if x > y:
+    result = f"{x} is bigger"
+else:
+    result = f"{y} is bigger"
+
+result = eval(code)
+'''
     """
 
     messages = [
