@@ -21,7 +21,7 @@ DEBUG_MODE = os.getenv('DEBUG_MODE', 'False').lower() == 'true'
 MAX_RETRIES = int(os.getenv('MAX_RETRIES', '3'))  # Default to 3 if not set
 
 # Utility Functions
-def truncate_text(text, max_length=5000):
+def truncate_text(text, max_length=2500):
     return (text[:max_length] + '...') if len(text) > max_length else text
 
 def get_title_from_url(url):
@@ -60,7 +60,7 @@ class WebSearchModule:
     def __init__(self):
         self.header = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'}
 
-    async def perform_search(self, session, query, num_results=2):
+    async def perform_search(self, session, query, num_results=3):
         url = f'https://www.google.com/search?q={query}'
         async with session.get(url, headers=self.header) as response:
             if response.status == 200:
@@ -91,10 +91,10 @@ class WebSearchModule:
                 if description_text:
                     result["description"] = truncate_text(description_text)
                 if content:
-                    result["content"] = truncate_text(content, max_length=5000)
+                    result["content"] = truncate_text(content, max_length=2500)
                 if DEBUG_MODE:
                     print(f'Reading > "{title}"')
-                    print(truncate_text(content, max_length=5000))
+                    print(truncate_text(content, max_length=2500))
                 return result
             elif DEBUG_MODE:
                 print(f"> Skipping, not useful result:")
@@ -131,8 +131,9 @@ class GroqAPI:
         }
         data = {
             "messages": messages,
-            # "model": "llama3-70b-8192",
+            # "model": "llama-3.2-90b-text-preview",
             "model": "llama-3.1-70b-versatile",
+            # "model": "llama-3.2-11b-text-preview",
             "temperature": 0.5,
             "max_tokens": 1024,
             "top_p": 1,
@@ -156,7 +157,8 @@ async def generate_search_queries(groq_api, session, original_query, max_retries
     7. If you need to use your knowledge first, do so.
     8. When asked about the difference between two things, generate search intents for each topic separately.
     9. ALWAYS at most queries just require one or two queries, only on those cases where the query is simple or you are unsure, generate more than one or two.
-    10. If previous queries and an answer are provided, generate new queries that address the shortcomings of the previous answer and avoid repeating the previous queries."""
+    10. If previous queries and an answer are provided, generate new queries that address the shortcomings of the previous answer and avoid repeating the previous queries.
+    11. ALWAYS split searches for each important part of the query in case you need to gather information but make sure to not get off the rails. In short, don't look for things together, make a search for each important part instead. DONT LOOK FOR THINGS TOGETHER."""
 
     messages = [
         {"role": "system", "content": system_content},
@@ -309,7 +311,7 @@ async def process_user_query(query, groq_api, max_retries=None):
         else:
             # Proceed with generating search queries and evaluating the answer
             search_module = WebSearchModule()
-            num_results = 3
+            num_results = 2
             fixed_count = None
             previous_queries = None
             previous_answer = None
